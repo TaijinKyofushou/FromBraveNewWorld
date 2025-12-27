@@ -61,6 +61,7 @@
             position: absolute; left: 0; top: 0; height: 100%; width: 0%;
             background: var(--text-color); transition: width 0.5s ease;
         }
+        /* 时间栏 */
         #time-display {
             position: absolute;
             top: 20px;
@@ -234,13 +235,13 @@
         }
 
         @keyframes heat-shimmer {
-            0% { letter-spacing: 1rem; opacity: 1; filter: blur(0px); }
-            100% { letter-spacing: 1.2rem; opacity: 0.7; filter: blur(0.5px); }
+            0% { letter-spacing: 1rem; opacity: 0.7; filter: blur(0px); }
+            100% { letter-spacing: 1.2rem; opacity: 1; filter: blur(0.5px); }
         }
         
         @keyframes heat-shimmer-mobile {
-            0% { letter-spacing: 0.8rem; opacity: 1; filter: blur(0px); }
-            100% { letter-spacing: 1rem; opacity: 0.7; filter: blur(0.5px); }
+            0% { letter-spacing: 0.8rem; opacity: 0.7; filter: blur(0px); }
+            100% { letter-spacing: 1rem; opacity: 1; filter: blur(0.5px); }
         }
 
         .credits { font-size: 0.8rem; color: #999; margin-bottom: 30px; letter-spacing: 2px; }
@@ -293,6 +294,9 @@
         }
         .ach-item.unlocked {
             color: #333; border-color: var(--accent-color); background: #fffafa;
+        }
+        .ach-item.unlocked.true-ending {
+            background: #fffffe;
         }
         
         /* Segment成就列表 */
@@ -716,10 +720,13 @@
             time: "" // 当前时间节点
         };
         let gameHistory = [];
+        let segmentHistory = []; // 保存当前节点内每个segment之前的状态
         let unlockedAchievements = [];
         let unlockedSegmentAchievements = [];
         let storageKeyPrefix = "avg_engine_"; 
-        let inputEnabled = true; 
+        let inputEnabled = true;
+        let choiceTimeout = null; // 用于跟踪renderChoices的setTimeout
+        let isProcessingChoice = false; // 防止重复处理选择 
         
         // NG+ 变量
         let finalEndings = []; // 自动筛选出的流程较长的结局
@@ -1072,6 +1079,7 @@
                 time: storyData.meta.initialTime || ""
             };
             gameHistory = [];
+            segmentHistory = []; // 清空segment历史
             
             // 初始化时间显示
             if (gameState.time) {
@@ -1101,6 +1109,7 @@
                 const save = JSON.parse(saveStr);
                 gameState = save.gameState;
                 gameHistory = save.gameHistory || [];
+                segmentHistory = []; // 清空segment历史（无法从保存中恢复）
                 
                 document.getElementById('start-screen').style.display = 'none';
                 document.getElementById('top-ui').style.opacity = '1';
@@ -1143,8 +1152,20 @@
                 return;
             }
 
+            // 清除选择框相关的状态
+            if (choiceTimeout !== null) {
+                clearTimeout(choiceTimeout);
+                choiceTimeout = null;
+            }
+            const choicesArea = document.getElementById('choices-area');
+            choicesArea.innerHTML = '';
+            choicesArea.style.opacity = '0';
+            choicesArea.style.pointerEvents = 'none';
+            isProcessingChoice = false; // 重置选择处理标志
+
             gameState.nodeId = nodeId;
             gameState.segmentIndex = 0;
+            segmentHistory = []; // 清空segment历史，开始新的节点
             
             if (!isBacktracking) autoSave();
 
@@ -1216,7 +1237,7 @@
             return false;
         }
 
-        function renderSegment() {
+        function renderSegment(isRestoring = false) {
             const node = storyData.nodes[gameState.nodeId];
             
             // 如果播放完了所有段落
@@ -1242,13 +1263,18 @@
 
             setTimeout(() => {
                 // 更新时间（如果segment中定义了time）
-                if (segment.time !== undefined) {
+                // 如果是恢复状态，说明time已经正确，不再重复更新
+                if (segment.time !== undefined && !isRestoring) {
                     gameState.time = segment.time;
+                    updateTimeDisplay();
+                } else if (isRestoring) {
+                    // 恢复状态时，确保时间显示正确
                     updateTimeDisplay();
                 }
 
                 // 修改val值（如果segment中定义了changes）
-                if (segment.changes) {
+                // 如果是恢复状态，说明changes已经应用过，不再重复应用
+                if (segment.changes && !isRestoring) {
                     if (segment.changes.val) gameState.val += segment.changes.val;
                     if (segment.changes.valSet !== undefined) gameState.val = segment.changes.valSet;
                     if (segment.changes.addFlag) gameState.flags.push(segment.changes.addFlag);
@@ -1340,9 +1366,20 @@
 
         function renderChoices(choices) {
             const choicesArea = document.getElementById('choices-area');
+            
+            // 清除之前的setTimeout（如果存在）
+            if (choiceTimeout !== null) {
+                clearTimeout(choiceTimeout);
+                choiceTimeout = null;
+            }
+            
+            // 立即清空并隐藏选择框
             choicesArea.innerHTML = '';
             choicesArea.style.opacity = '0';
-            choicesArea.style.pointerEvents = 'auto';
+            choicesArea.style.pointerEvents = 'none';
+            
+            // 重置选择处理标志
+            isProcessingChoice = false;
             
             // 存入历史栈以便撤回
             const savedState = JSON.parse(JSON.stringify(gameState));
@@ -1365,12 +1402,33 @@
                 choicesArea.appendChild(btn);
             });
 
-            setTimeout(() => choicesArea.style.opacity = '1', 200);
+            // 延迟显示选择框，并保存timeout引用
+            choiceTimeout = setTimeout(() => {
+                choicesArea.style.opacity = '1';
+                choicesArea.style.pointerEvents = 'auto';
+                choiceTimeout = null;
+            }, 200);
         }
 
         function makeChoice(choice) {
-            document.getElementById('choices-area').style.opacity = '0';
-            document.getElementById('choices-area').style.pointerEvents = 'none';
+            // 防止重复处理选择
+            if (isProcessingChoice) {
+                return;
+            }
+            
+            // 清除renderChoices的setTimeout（如果存在）
+            if (choiceTimeout !== null) {
+                clearTimeout(choiceTimeout);
+                choiceTimeout = null;
+            }
+            
+            // 设置处理标志，防止重复点击
+            isProcessingChoice = true;
+            
+            const choicesArea = document.getElementById('choices-area');
+            choicesArea.style.opacity = '0';
+            choicesArea.style.pointerEvents = 'none';
+            choicesArea.innerHTML = ''; // 立即清空选择框内容
 
             // 应用效果
             if (choice.changes) {
@@ -1582,6 +1640,10 @@
             if (node && node.isEnding) return; 
             
             if (node && node.segments && gameState.segmentIndex < node.segments.length) {
+                // 在进入下一个segment之前，保存当前状态到segmentHistory
+                const savedState = JSON.parse(JSON.stringify(gameState));
+                segmentHistory.push(savedState);
+                
                 gameState.segmentIndex++;
                 renderSegment();
             }
@@ -1600,7 +1662,24 @@
         function loadPrevChoice() {
             if (!inputEnabled) return; 
             
-            if (gameHistory.length > 0) {
+            const node = storyData.nodes[gameState.nodeId];
+            
+            // 优先检查当前节点内是否有上一个segment
+            if (node && node.segments && gameState.segmentIndex > 0 && segmentHistory.length > 0) {
+                // 回到上一个segment
+                const prevState = segmentHistory.pop();
+                gameState = JSON.parse(JSON.stringify(prevState));
+                
+                document.getElementById('choices-area').style.opacity = '0';
+                document.getElementById('choices-area').style.pointerEvents = 'none';
+                updateStatusUI();
+                document.getElementById('timeline-progress').style.width = gameState.progress + '%';
+                
+                // 重新渲染当前segment（标记为恢复状态，避免重复应用changes）
+                renderSegment(true);
+                autoSave();
+            } else if (gameHistory.length > 0) {
+                // 如果没有上一个segment，则回到上一个节点
                 const prevState = gameHistory.pop();
                 gameState = JSON.parse(JSON.stringify(prevState));
                 
@@ -1643,7 +1722,7 @@
         }
 
         function wipeMemory() {
-            if (confirm("警告：这将删除该游戏的所有进度和结局记录。\n确定要重置吗？")) {
+            if (confirm("警告：这将删除该游戏的所有成就和结局记录。\n确定要重置吗？")) {
                 localStorage.removeItem(storageKeyPrefix + 'achievements');
                 localStorage.removeItem(storageKeyPrefix + 'segmentAchievements');
                 localStorage.removeItem(storageKeyPrefix + 'save');
@@ -1665,7 +1744,12 @@
             } else {
                 unlockedAchievements.forEach((ach, index) => {
                     const div = document.createElement('div');
-                    div.className = 'ach-item unlocked';
+                    let className = 'ach-item unlocked';
+                    // 如果是真结局，添加 true-ending 类
+                    if (ach.type && (ach.type.includes('TRUE') || ach.type.includes('True'))) {
+                        className += ' true-ending';
+                    }
+                    div.className = className;
                     div.innerHTML = `<strong>${ach.title}</strong><br><span style="font-size:0.7rem;color:#666">${ach.type}</span>`;
                     div.style.cursor = 'pointer';
                     div.onclick = () => {
